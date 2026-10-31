@@ -98,6 +98,18 @@ create table if not exists follows (
 );
 create index if not exists follows_followee_idx on follows(followee_id);
 
+-- A follow request is pending until the owner of a PRIVATE account approves it (then a row is written to
+-- follows and the request is deleted) or declines it (request just deleted). Until approval the requester
+-- sees nothing private and cannot start a chat with the account.
+create table if not exists follow_requests (
+  requester_id uuid not null references profiles(id) on delete cascade,
+  target_id uuid not null references profiles(id) on delete cascade,
+  created_at timestamptz not null default now(),
+  primary key (requester_id, target_id),
+  check (requester_id <> target_id)
+);
+create index if not exists follow_requests_target_idx on follow_requests(target_id, created_at desc);
+
 create table if not exists blocks (
   blocker_id uuid not null references profiles(id) on delete cascade,
   blocked_id uuid not null references profiles(id) on delete cascade,
@@ -155,6 +167,7 @@ create table if not exists comments (
 );
 create index if not exists comments_post_idx on comments(post_id, created_at);
 
+
 -- ---------- Stories (expire after 24h; also removed from Cloudinary by the cleanup job) ----------
 create table if not exists stories (
   id uuid primary key default gen_random_uuid(),
@@ -177,6 +190,15 @@ create table if not exists story_views (
   created_at timestamptz not null default now(),
   primary key (story_id, viewer_id)
 );
+
+-- Story likes. Only the story's owner ever sees who liked (and how many); rows vanish with the story.
+create table if not exists story_likes (
+  story_id uuid not null references stories(id) on delete cascade,
+  user_id uuid not null references profiles(id) on delete cascade,
+  created_at timestamptz not null default now(),
+  primary key (story_id, user_id)
+);
+create index if not exists story_likes_story_idx on story_likes(story_id, created_at desc);
 
 -- ---------- LINKUP events ----------
 create table if not exists events (
@@ -239,6 +261,12 @@ create table if not exists messages (
   check (body is not null or media_public_id is not null)
 );
 create index if not exists messages_conv_idx on messages(conversation_id, created_at desc);
+
+-- A reply to someone's story arrives as a normal direct message flagged with the story it answers.
+-- story_id becomes NULL once the story expires/deletes; story_reply stays true so the chat can still say
+-- "Replied to your story".
+alter table messages add column if not exists story_id uuid references stories(id) on delete set null;
+alter table messages add column if not exists story_reply boolean not null default false;
 
 alter table events drop constraint if exists events_conversation_fk;
 alter table events add constraint events_conversation_fk foreign key (conversation_id) references conversations(id) on delete set null;
@@ -549,7 +577,8 @@ declare t text;
 begin
   for t in select unnest(array[
     'schools','communities','profiles','email_verifications','school_verification_requests','community_members',
-    'follows','blocks','posts','post_media','likes','comments','stories','story_views','events','event_rsvps',
+    'follows','follow_requests','blocks','posts','post_media','likes','comments','stories',
+    'story_views','story_likes','events','event_rsvps',
     'conversations','conversation_members','messages','notifications','reports','password_reset_requests',
     'audit_logs','feature_flags','game_rounds','game_guesses','achievements','user_achievements',
     'coin_ledger','payer_numbers','payments','trivia_entry_credits','boosts','trivia_sets','trivia_questions',
@@ -599,6 +628,14 @@ drop policy if exists comments_delete_own on comments; create policy comments_de
 drop policy if exists follows_read on follows;  create policy follows_read on follows for select to authenticated using (true);
 drop policy if exists follows_own on follows;   create policy follows_own on follows for all to authenticated using (follower_id = auth.uid()) with check (follower_id = auth.uid());
 drop policy if exists blocks_own on blocks;     create policy blocks_own on blocks for all to authenticated using (blocker_id = auth.uid()) with check (blocker_id = auth.uid());
+-- Follow requests: only the two people involved can see one; the requester files and may withdraw it,
+-- the target may decline it. Approval (writing the follows row) is done by the server only.
+drop policy if exists freq_read on follow_requests;
+create policy freq_read on follow_requests for select to authenticated using (requester_id = auth.uid() or target_id = auth.uid());
+drop policy if exists freq_insert on follow_requests;
+create policy freq_insert on follow_requests for insert to authenticated with check (requester_id = auth.uid());
+drop policy if exists freq_delete on follow_requests;
+create policy freq_delete on follow_requests for delete to authenticated using (requester_id = auth.uid() or target_id = auth.uid());
 
 -- Stories: only unexpired, approved stories
 drop policy if exists stories_read on stories;
@@ -606,6 +643,12 @@ create policy stories_read on stories for select to authenticated using (expires
 drop policy if exists stories_own on stories;   create policy stories_own on stories for all to authenticated using (author_id = auth.uid()) with check (author_id = auth.uid());
 drop policy if exists story_views_own on story_views;
 create policy story_views_own on story_views for all to authenticated using (viewer_id = auth.uid()) with check (viewer_id = auth.uid());
+-- Story likes: a person manages their own like; a story's owner may read the likes on their stories.
+drop policy if exists story_likes_own on story_likes;
+create policy story_likes_own on story_likes for all to authenticated using (user_id = auth.uid()) with check (user_id = auth.uid());
+drop policy if exists story_likes_owner_read on story_likes;
+create policy story_likes_owner_read on story_likes for select to authenticated
+  using (exists (select 1 from stories s where s.id = story_id and s.author_id = auth.uid()));
 
 -- Events
 drop policy if exists events_read on events;
