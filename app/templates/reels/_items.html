@@ -17,6 +17,7 @@
     <a class="act" href="{{ url_for('feed.detail', post_id=r.id) }}#comments">{{ m.icon('comment') }}<span>{{ r.comment_count }}</span></a>
     <button class="act" type="button" data-copy="{{ url_for('feed.detail', post_id=r.id, _external=True) }}">{{ m.icon('share') }}<span>Share</span></button>
     {% if r.author_id == cur.id %}<form method="post" action="{{ url_for('feed.delete_post', post_id=r.id) }}" data-confirm="Delete this reel?">{{ m.csrf() }}<button class="act">{{ m.icon('trash') }}<span>Delete</span></button></form>
-    {% else %}<button class="act" type="button" data-report="reel:{{ r.id }}">{{ m.icon('flag') }}<span>Report</span></button>{% endif %}
+    {% else %}<button class="act" type="button" data-not-interested="{{ r.id }}">{{ m.icon('x') }}<span>Hide</span></button>
+    <button class="act" type="button" data-report="reel:{{ r.id }}">{{ m.icon('flag') }}<span>Report</span></button>{% endif %}
   </div>
 </section>{% endif %}{% endfor %}
