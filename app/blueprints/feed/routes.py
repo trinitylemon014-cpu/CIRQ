@@ -1,7 +1,7 @@
-from flask import Blueprint, render_template, request, redirect, url_for, flash, jsonify, g, abort
+from flask import Blueprint, render_template, request, redirect, url_for, flash, jsonify, g, abort, current_app
 from app.decorators import login_required
 from app.extensions import limiter
-from app.services import supabase_service as sb, cloudinary_service as cs, social
+from app.services import supabase_service as sb, cloudinary_service as cs, social, recommender
 from app.services.cloudinary_service import UploadError
 from app.services.moderation_service import check_text
 from app.services.notification_service import notify
@@ -35,7 +35,28 @@ def feed_posts(uid, before=None):
     posts = [p for p in social.hydrate_posts(rows, uid) if p["author_id"] not in hidden
              and (p["author"]["account_status"] == "approved")
              and (p["visibility"] == "followers" and (p["author_id"] in following) or p["visibility"] == "public")]
+    try:
+        posts = recommender.drop_shown_suggestions(uid, posts, set(following))   # don't repeat what we showed as a suggestion
+    except Exception:
+        current_app.logger.exception("suggestion de-dup failed")
     return posts, cursor
+
+
+def with_suggestions(user, posts):
+    """Weave 'Suggested for you' posts into the feed: one after every 4th post (max 3 per page). Never breaks the feed."""
+    if len(posts) < 3:
+        return posts
+    try:
+        sugg = recommender.suggest(user["id"], user, exclude_ids={p["id"] for p in posts}, n=min(3, max(1, len(posts) // 4)))
+    except Exception:
+        current_app.logger.exception("suggestions failed")
+        return posts
+    out, i = [], 0
+    for n, p in enumerate(posts, 1):
+        out.append(p)
+        if n % 4 == 0 and i < len(sugg):
+            out.append(sugg[i]); i += 1
+    return out + sugg[i:]
 
 
 def story_tray(uid):
@@ -62,6 +83,7 @@ def story_tray(uid):
 def home():
     before = request.args.get("before")
     posts, cursor = feed_posts(g.user["id"], before)
+    posts = with_suggestions(g.user, posts)
     if request.args.get("partial"):
         return render_template("partials/post_list.html", posts=posts, cursor=cursor)
     tray = story_tray(g.user["id"])
@@ -162,6 +184,7 @@ def like(post_id):
         sb.insert("likes", {"post_id": post_id, "user_id": g.user["id"]})
         liked = True
         notify(post["author_id"], "like", g.user["id"], "post", post_id)
+        recommender.record_safe(g.user, post, author, "like")
     fresh = sb.get("posts", "like_count", id=post_id)
     return jsonify(liked=liked, count=fresh["like_count"])
 
@@ -202,6 +225,7 @@ def add_comment(post_id):
         return redirect(url_for("feed.detail", post_id=post_id))
     c = sb.insert("comments", {"post_id": post_id, "author_id": g.user["id"], "body": body})
     notify(post["author_id"], "comment", g.user["id"], "post", post_id, dedupe=False)
+    recommender.record_safe(g.user, post, author, "comment")
     c["author"] = g.user
     if wants_json:
         return jsonify(html=render_template("partials/comment.html", c=c), count=sb.get("posts", "comment_count", id=post_id)["comment_count"])
