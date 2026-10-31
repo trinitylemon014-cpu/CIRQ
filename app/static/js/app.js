@@ -197,38 +197,163 @@
   function step(d) { S.i += d; if (S.i < 0) S.i = 0; if (S.i >= S.items.length) closeStory(); else show(); }
   function closeStory() { clearTimeout(S.timer); viewer.classList.remove("open"); $("[data-smedia]", viewer).innerHTML = ""; document.body.style.overflow = ""; }
 
-  /* ---------- reels: play only the visible one, lazy-load sources, never autoplay audio ---------- */
+  /* ---------- reels feed: Instagram-style playback ---------- */
   const reels = $("#reels");
   if (reels) {
     let muted = true;
+    const ICON = (n) => `<svg class="i"><use href="#i-${n}"/></svg>`;
+    const vid = (r) => $("video", r);
+    const arm = (r) => {                       // give a reel its source (lazy), metadata only
+      const v = r && vid(r); if (!v) return;
+      if (!v.getAttribute("src") && v.dataset.src) { v.preload = "metadata"; v.src = v.dataset.src; }
+    };
+    const flash = (r, icon) => {
+      const f = $(".reel-flash", r); if (!f) return;
+      f.innerHTML = ICON(icon); f.classList.remove("go"); void f.offsetWidth; f.classList.add("go");
+    };
+    function playReel(r) {
+      const v = vid(r); if (!v) return;
+      arm(r); arm(r.nextElementSibling);       // start the next one buffering for a seamless swipe
+      v.muted = muted; v.classList.remove("failed"); $(".reel-retry", r).hidden = true;
+      const pr = v.play(); if (pr && pr.catch) pr.catch(() => { /* autoplay blocked until a tap */ });
+    }
     const io = new IntersectionObserver((entries) => {
       entries.forEach((en) => {
-        const v = $("video", en.target); if (!v) return;
-        if (!v.src && v.dataset.src && en.intersectionRatio > 0.1) v.src = v.dataset.src;
-        if (en.isIntersecting && en.intersectionRatio > 0.65) { v.muted = muted; v.play().catch(() => {}); } else v.pause();
+        const r = en.target, v = vid(r); if (!v) return;
+        if (en.intersectionRatio > 0.1) arm(r);
+        if (en.isIntersecting && en.intersectionRatio > 0.65) { $$("video", reels).forEach((o) => { if (o !== v) o.pause(); }); playReel(r); }
+        else { v.pause(); if (en.intersectionRatio === 0) v.currentTime = 0; }
       });
-      const last = $$("[data-reel]", reels).slice(-2)[0];
+      const all = $$("[data-reel]", reels), last = all[all.length - 2] || all[all.length - 1];
       if (last && entries.some((en) => en.target === last && en.isIntersecting)) loadMoreReels();
-    }, { root: reels, threshold: [0.1, 0.65] });
-    const watch = () => $$("[data-reel]", reels).forEach((r) => { if (!r._w) { r._w = 1; io.observe(r); } });
+    }, { root: reels, threshold: [0, 0.1, 0.65] });
+
+    function wire(r) {                         // per-reel video events (progress, buffering, errors)
+      const v = vid(r); if (!v || v._wired) return; v._wired = 1;
+      const bar = $(".reel-progress i", r);
+      v.addEventListener("timeupdate", () => { if (v.duration) bar.style.transform = `scaleX(${v.currentTime / v.duration})`; });
+      ["waiting", "loadstart", "seeking"].forEach((ev) => v.addEventListener(ev, () => r.classList.add("buffering")));
+      ["playing", "canplay", "loadeddata"].forEach((ev) => v.addEventListener(ev, () => r.classList.remove("buffering")));
+      v.addEventListener("error", () => { r.classList.remove("buffering"); if (v.getAttribute("src")) { v.classList.add("failed"); $(".reel-retry", r).hidden = false; } });
+    }
+    const watch = () => $$("[data-reel]", reels).forEach((r) => { if (!r._w) { r._w = 1; wire(r); io.observe(r); } });
     watch();
+
+    // tap = play/pause, double-tap = like (with a heart burst), like Instagram
+    let lastTap = 0, tapTimer = null;
+    function burst(r, x, y) {
+      const h = document.createElement("div"); h.className = "reel-burst"; h.innerHTML = ICON("heart");
+      const box = r.getBoundingClientRect(); h.style.left = (x - box.left) + "px"; h.style.top = (y - box.top) + "px";
+      r.append(h); setTimeout(() => h.remove(), 800);
+    }
     reels.addEventListener("click", (e) => {
-      const tg = e.target.closest("[data-reel-toggle]"); const mu = e.target.closest("[data-reel-mute]");
-      if (tg) { const v = $("video", tg.closest("[data-reel]")); v.paused ? v.play() : v.pause(); }
-      if (mu) { muted = !muted; $$("video", reels).forEach((v) => (v.muted = muted));
-        $$("[data-reel-mute]", reels).forEach((b) => { b.innerHTML = `<svg class="i"><use href="#i-${muted ? "mute" : "volume"}"/></svg>`; b.setAttribute("aria-label", muted ? "Unmute" : "Mute"); }); }
+      const retry = e.target.closest("[data-reel-retry]");
+      if (retry) { const r = retry.closest("[data-reel]"), v = vid(r); const src = v.dataset.src; v.removeAttribute("src"); v.load(); v.src = src; playReel(r); return; }
+      const mu = e.target.closest("[data-reel-mute]");
+      if (mu) {
+        muted = !muted; $$("video", reels).forEach((v) => (v.muted = muted));
+        $$("[data-reel-mute]", reels).forEach((b) => { b.innerHTML = ICON(muted ? "mute" : "volume"); b.setAttribute("aria-label", muted ? "Unmute" : "Mute"); });
+        return;
+      }
+      const tg = e.target.closest("[data-reel-toggle]"); if (!tg) return;
+      const r = tg.closest("[data-reel]"), v = vid(r), now = Date.now();
+      if (now - lastTap < 300) {               // double tap
+        clearTimeout(tapTimer); lastTap = 0;
+        const like = $("[data-like]", r); if (like && !like.classList.contains("liked")) like.click();
+        burst(r, e.clientX, e.clientY); return;
+      }
+      lastTap = now;
+      tapTimer = setTimeout(() => {            // single tap (after we know it is not a double tap)
+        if (v.paused) { if (muted) { /* stay muted until the user chooses */ } v.play().catch(() => {}); flash(r, "play"); }
+        else { v.pause(); flash(r, "pause"); }
+      }, 260);
     });
+
+    document.addEventListener("visibilitychange", () => { if (document.hidden) $$("video", reels).forEach((v) => v.pause()); });
+    document.addEventListener("keydown", (e) => {   // desktop: arrows move between reels, space pauses
+      if (/INPUT|TEXTAREA|SELECT/.test((e.target.tagName || ""))) return;
+      const rs = $$("[data-reel]", reels); const cur = rs.findIndex((r) => { const b = r.getBoundingClientRect(), c = reels.getBoundingClientRect(); return Math.abs(b.top - c.top) < c.height / 2; });
+      if (e.key === "ArrowDown" || e.key === "j") { e.preventDefault(); rs[Math.min(rs.length - 1, cur + 1)].scrollIntoView({ behavior: "smooth" }); }
+      if (e.key === "ArrowUp" || e.key === "k") { e.preventDefault(); rs[Math.max(0, cur - 1)].scrollIntoView({ behavior: "smooth" }); }
+      if (e.key === " " && cur >= 0) { e.preventDefault(); const v = vid(rs[cur]); v.paused ? v.play().catch(() => {}) : v.pause(); }
+      if (e.key === "m") { const b = $("[data-reel-mute]", reels); b && b.click(); }
+    });
+
     let busy = false;
     async function loadMoreReels() {
       const cur = reels.dataset.cursor; if (!cur || busy) return; busy = true;
       try {
         const res = await fetch(`${reels.dataset.moreUrl}?before=${encodeURIComponent(cur)}&partial=1`, { credentials: "same-origin" });
+        if (!res.ok) throw new Error("load failed");
         const html = await res.text();
         reels.dataset.cursor = res.headers.get("X-Next-Cursor") || "";
         reels.insertAdjacentHTML("beforeend", html); watch();
       } catch (_) { /* try again on next scroll */ }
       busy = false;
     }
+  }
+
+  /* ---------- reel composer: preview, validation, real upload progress ---------- */
+  const rform = $("[data-reel-form]");
+  if (rform) {
+    const q = (s) => $(s, rform);
+    const file = q("#rc-file"), pick = q("[data-rc-pick]"), edit = q("[data-rc-edit]"), video = q("[data-rc-video]");
+    const err = q("[data-rc-error]"), overlay = q("[data-rc-overlay]"), submit = q("[data-rc-submit]");
+    const ring = q("[data-rc-ring]"), pct = q("[data-rc-pct]"), status = q("[data-rc-status]");
+    const maxBytes = (+rform.dataset.maxMb || 60) * 1024 * 1024, maxSec = +rform.dataset.maxSec || 90;
+    const CIRC = 2 * Math.PI * 19; ring.style.strokeDasharray = CIRC;
+    let xhr = null, url = null, duration = 0;
+    const mb = (n) => (n / 1048576).toFixed(n > 10485760 ? 0 : 1) + " MB";
+    const fmt = (t) => `${Math.floor(t / 60)}:${String(Math.round(t % 60)).padStart(2, "0")}`;
+    const showErr = (m) => { err.textContent = m; err.hidden = !m; };
+    const setProgress = (p) => { ring.style.strokeDashoffset = CIRC * (1 - p); pct.textContent = Math.round(p * 100) + "%"; };
+    function reset() {
+      if (url) URL.revokeObjectURL(url); url = null; duration = 0; file.value = ""; video.removeAttribute("src"); video.load();
+      edit.hidden = true; pick.hidden = false; overlay.hidden = true; showErr(""); submit.disabled = false; setProgress(0);
+    }
+    file.addEventListener("change", () => {
+      const f = file.files[0]; if (!f) return; showErr("");
+      const okType = /^video\//.test(f.type) || /\.(mp4|mov|m4v|webm)$/i.test(f.name);
+      if (!okType) { reset(); toast("Please choose a video file.", "error"); return; }
+      if (f.size > maxBytes) { reset(); toast(`That video is ${mb(f.size)}. The limit is ${mb(maxBytes)}.`, "error"); return; }
+      pick.hidden = true; edit.hidden = false; q("[data-rc-name]").textContent = f.name; q("[data-rc-info]").textContent = mb(f.size);
+      q("[data-rc-nopreview]").hidden = true;
+      url = URL.createObjectURL(f); video.src = url;
+      video.onloadedmetadata = () => {
+        duration = video.duration || 0;
+        q("[data-rc-info]").textContent = `${mb(f.size)} · ${duration ? fmt(duration) : ""}`;
+        if (duration > maxSec + 1) showErr(`This video is ${fmt(duration)} long. Reels can be up to ${maxSec} seconds. Trim it and try again.`);
+        video.play().catch(() => {});
+      };
+      video.onerror = () => { q("[data-rc-nopreview]").hidden = false; };   // e.g. an HEVC .mov the browser can't preview
+    });
+    q("[data-rc-remove]").addEventListener("click", reset);
+    q("[data-rc-caption]").addEventListener("input", (e) => { q("[data-rc-count]").textContent = e.target.value.length; });
+    video.addEventListener("click", () => (video.paused ? video.play() : video.pause()));
+    q("[data-rc-cancel]").addEventListener("click", () => { if (xhr) xhr.abort(); });
+
+    function fail(m) { overlay.hidden = true; submit.disabled = false; showErr(m); xhr = null; window.removeEventListener("beforeunload", warn); }
+    const warn = (e) => { e.preventDefault(); e.returnValue = ""; };
+    rform.addEventListener("submit", (e) => {
+      e.preventDefault();
+      const f = file.files[0]; if (!f) { showErr("Select a video first."); return; }
+      if (duration > maxSec + 1) { showErr(`Reels can be up to ${maxSec} seconds.`); return; }
+      showErr(""); submit.disabled = true; overlay.hidden = false; status.textContent = "Uploading…"; setProgress(0);
+      xhr = new XMLHttpRequest(); xhr.open("POST", rform.action); xhr.responseType = "json"; xhr.timeout = 240000;
+      xhr.setRequestHeader("X-CSRFToken", csrf()); xhr.setRequestHeader("X-Requested-With", "fetch");
+      xhr.upload.onprogress = (ev) => { if (!ev.lengthComputable) return; const p = ev.loaded / ev.total; setProgress(p * 0.98); if (p >= 1) status.textContent = "Processing your reel…"; };
+      xhr.onload = () => {
+        const r = xhr.response || {};
+        if (xhr.status >= 200 && xhr.status < 300 && r.ok) { setProgress(1); status.textContent = "Posted!"; window.removeEventListener("beforeunload", warn); location.href = r.redirect || "/reels"; return; }
+        const byStatus = { 413: "That video is larger than CIRQ allows.", 429: "You've posted a lot of reels. Please wait a while and try again.", 502: "The server was busy. Please try again.", 504: "The upload took too long. Try a shorter or smaller video." };
+        fail(r.error || byStatus[xhr.status] || "Upload failed. Please try again.");
+      };
+      xhr.onerror = () => fail("Connection lost. Check your internet and tap Share reel to try again.");
+      xhr.ontimeout = () => fail("The upload took too long. Try a shorter video or a better connection.");
+      xhr.onabort = () => fail("");
+      window.addEventListener("beforeunload", warn);
+      xhr.send(new FormData(rform));
+    });
   }
 
   /* ---------- chat ---------- */
