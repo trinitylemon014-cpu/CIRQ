@@ -1,7 +1,7 @@
 {% import 'partials/macros.html' as m with context %}
 <article class="card post{{ ' suggested' if p.suggested }}" id="post-{{ p.id }}" data-post-id="{{ p.id }}">
   {% if p.suggested %}<div class="sugg-tag">{{ m.icon('rocket','i-sm') }}<span><b>Suggested for you</b><small>{{ p.reason }}</small></span>
-    {% if p.author_id != cur.id %}<button class="btn sm" type="button" data-follow="{{ p.author.username }}" data-following="0">Follow</button>{% endif %}</div>{% endif %}
+    {% if p.author_id != cur.id %}{{ m.follow_btn(p.author.username, 'none', private=p.author.is_private) }}{% endif %}</div>{% endif %}
   <div class="post-head">
     <a href="{{ url_for('profiles.view', username=p.author.username) }}">{{ m.avatar(p.author, 46) }}</a>
     <div class="who"><a href="{{ url_for('profiles.view', username=p.author.username) }}"><b>{{ p.author.display_name }}</b>{{ m.verified(p.author) }}</a>
