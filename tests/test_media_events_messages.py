@@ -173,3 +173,20 @@ def test_notifications_list_open_and_mark_read(as_user, db):
     a.post("/notifications/read-all")
     assert a.get("/api/notifications/count").get_json()["count"] == 0
     assert b.get(f"/notifications/{nid}/open").status_code == 404
+
+
+def test_reel_upload_json_for_progress_uploader(as_user, db, uploads):
+    c, _ = as_user("alice")
+    r = c.post("/reels", data={"video": (io.BytesIO(MP4), "a.mp4"), "caption": "hi"}, content_type="multipart/form-data",
+               headers={"X-Requested-With": "fetch"})
+    assert r.status_code == 200 and r.get_json()["ok"] is True and r.get_json()["redirect"].endswith("/reels")
+    bad = c.post("/reels", data={"video": (io.BytesIO(b"not a video"), "a.mp4")}, content_type="multipart/form-data",
+                 headers={"X-Requested-With": "fetch"})
+    assert bad.status_code == 400 and "error" in bad.get_json()
+    assert len(db.data["posts"]) == 1
+
+
+def test_reel_delivery_url_is_h264_mp4(uploads):
+    from app.services import cloudinary_service as cs
+    url = cs.media_src({"public_id": "cirq/reels/a", "media_type": "video", "delivery_type": "upload", "url": "u"}, 540)
+    assert url.endswith(".mp4") and "vc_h264" in url and "ac_aac" in url
