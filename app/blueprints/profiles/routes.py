@@ -128,6 +128,17 @@ def settings():
                 sb.update("profiles", {"session_epoch": epoch}, id=me["id"])   # signs out other devices
                 session["epoch"] = epoch
                 flash("Password changed. Other devices were signed out.", "success")
+        elif action == "recs":
+            from app.services import recommender
+            if request.form.get("reset"):
+                recommender.reset(me["id"])
+                flash("Done. Your suggestions have been reset and will start fresh.", "success")
+            else:
+                on = bool(request.form.get("personalized_recs"))
+                sb.update("profiles", {"personalized_recs": on}, id=me["id"])
+                if not on:
+                    recommender.reset(me["id"])        # switching off also forgets what we learned
+                flash("Personalised suggestions are on." if on else "Personalised suggestions are off. We cleared what we'd learned.", "success")
         elif action == "delete":
             if not auth_service.verify_password(me["id"], request.form.get("confirm_password", "")) or request.form.get("confirm_text") != "DELETE":
                 flash("Type DELETE and your password to confirm.", "error")
