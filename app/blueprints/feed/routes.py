@@ -88,7 +88,8 @@ def home():
         return render_template("partials/post_list.html", posts=posts, cursor=cursor)
     tray = story_tray(g.user["id"])
     suggestions = [p for p in sb.select("profiles", account_status="approved", school_id=g.user.get("school_id"), limit=8)
-                   if p["id"] != g.user["id"] and not social.is_following(g.user["id"], p["id"])][:4]
+                   if p["id"] != g.user["id"] and not social.is_following(g.user["id"], p["id"])
+                   and not social.has_requested(g.user["id"], p["id"])][:4]
     return render_template("feed/home.html", posts=posts, cursor=cursor, tray=tray, suggestions=suggestions)
 
 
