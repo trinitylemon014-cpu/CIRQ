@@ -20,7 +20,7 @@ DEFAULTS = {
     "stories": dict(moderation_status="ok", delivery_type="upload", caption=None),
     "events": dict(status="scheduled", visibility="public", moderation_status="ok", capacity=None, conversation_id=None, description=None,
                    cover_url=None, cover_public_id=None, ends_at=None, school_id=None),
-    "messages": dict(moderation_status="ok", body=None, media_type=None, media_url=None, media_public_id=None),
+    "messages": dict(moderation_status="ok", body=None, media_type=None, media_url=None, media_public_id=None, story_id=None, story_reply=False),
     "reports": dict(status="open", resolved_by=None, resolution_note=None, resolved_at=None, details=None),
     "password_reset_requests": dict(status="pending", manual_review=False, token_hash=None, token_expires_at=None, token_used_at=None,
                                     reviewed_by=None, reviewed_at=None, decision_note=None, completed_at=None, submitted_details={}),
@@ -41,7 +41,7 @@ DEFAULTS = {
 }
 PKS = {"likes": ("post_id", "user_id"), "follows": ("follower_id", "followee_id"), "blocks": ("blocker_id", "blocked_id"),
        "community_members": ("community_id", "user_id"), "conversation_members": ("conversation_id", "user_id"),
-       "event_rsvps": ("event_id", "user_id"), "user_interests": ("user_id", "dim", "key"), "story_views": ("story_id", "viewer_id"), "user_achievements": ("user_id", "code"),
+       "event_rsvps": ("event_id", "user_id"), "user_interests": ("user_id", "dim", "key"), "story_views": ("story_id", "viewer_id"), "story_likes": ("story_id", "user_id"), "follow_requests": ("requester_id", "target_id"), "user_achievements": ("user_id", "code"),
        "feature_flags": ("key",), "achievements": ("code",)}
 UNIQUES = {"profiles": [("username",)], "schools": [("slug",), ("name",)], "game_guesses": [("round_id", "card_index")],
            "trivia_answers": [("attempt_id", "question_id")], "trivia_attempts": [("set_id", "user_id")],
