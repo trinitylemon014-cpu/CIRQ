@@ -51,8 +51,9 @@ def create_app(config_object=None, clients=None):
     from app.blueprints.wallet.routes import bp as wallet_bp
     from app.blueprints.legal.routes import bp as legal_bp
     from app.blueprints.trivia.routes import bp as trivia_bp
+    from app.blueprints.recs.routes import bp as recs_bp
     for b in (auth_bp, feed_bp, profiles_bp, discover_bp, reels_bp, stories_bp, linkup_bp, messages_bp,
-              notifications_bp, games_bp, schools_bp, admin_bp, wallet_bp, trivia_bp, legal_bp):
+              notifications_bp, games_bp, schools_bp, admin_bp, wallet_bp, trivia_bp, recs_bp, legal_bp):
         app.register_blueprint(b)
 
     @app.before_request
@@ -175,4 +176,9 @@ def run_cleanup():
     stale = db().table("password_reset_requests").select("id").eq("status", "approved").lt("token_expires_at", now).execute().data or []
     for r in stale:
         sb.update("password_reset_requests", {"status": "expired"}, id=r["id"])
-    return f"removed {len(expired)} expired stories; expired {len(stale)} reset tokens"
+    try:
+        from app.services import recommender
+        old_signals = recommender.cleanup_old_signals()
+    except Exception:
+        old_signals = 0
+    return f"removed {len(expired)} expired stories; expired {len(stale)} reset tokens; pruned {old_signals} old viewing signals"
