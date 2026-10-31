@@ -1,4 +1,4 @@
-from flask import Blueprint, make_response, render_template, request, redirect, url_for, flash, g, current_app, abort
+from flask import Blueprint, jsonify, make_response, render_template, request, redirect, url_for, flash, g, current_app, abort
 from app.decorators import login_required
 from app.extensions import limiter, db
 from app.services import supabase_service as sb, cloudinary_service as cs, social
@@ -8,6 +8,7 @@ from app.utils import clean_text
 
 bp = Blueprint("reels", __name__)
 PER_PAGE = 5   # only a handful of videos are ever loaded at once
+MAX_REEL_SECONDS = 90
 
 
 @bp.get("/reels")
@@ -38,6 +39,18 @@ def new():
     return render_template("reels/new.html")
 
 
+def _wants_json():
+    return request.headers.get("X-Requested-With") == "fetch" or request.is_json
+
+
+def _fail(message, status=400):
+    """Errors go back as JSON to the progress uploader, or as a flash + redirect for a plain form post."""
+    if _wants_json():
+        return jsonify(error=message), status
+    flash(message, "error")
+    return redirect(url_for("reels.new"))
+
+
 @bp.post("/reels")
 @login_required
 @limiter.limit("10 per hour")
@@ -46,17 +59,28 @@ def create():
     caption = clean_text(request.form.get("caption"), 300)
     ok, why = check_text(caption)
     if not ok:
-        flash(why, "error")
-        return redirect(url_for("reels.new"))
+        return _fail(why)
     try:
-        kind, _, _ = cs.validate(f, allow_image=False)
-        info = cs.upload(f, "reels", g.user["id"], allow_image=False)
+        info = cs.upload(f, "reels", g.user["id"], allow_image=False)   # validates (type, size, signature) first
     except UploadError as e:
-        flash(str(e), "error")
-        return redirect(url_for("reels.new"))
+        return _fail(str(e))
+    duration = info.get("duration")
+    if duration and float(duration) > MAX_REEL_SECONDS + 1:
+        cs.destroy(info.get("public_id"), "video", info.get("delivery_type", "upload"))
+        return _fail(f"Reels can be up to {MAX_REEL_SECONDS} seconds long.")
     vis = "followers" if g.user.get("is_private") else "public"
-    post = sb.insert("posts", {"author_id": g.user["id"], "kind": "reel", "caption": caption or None, "visibility": vis})
-    sb.insert("post_media", {"post_id": post["id"], "owner_id": g.user["id"], **info})
+    post = None
+    try:
+        post = sb.insert("posts", {"author_id": g.user["id"], "kind": "reel", "caption": caption or None, "visibility": vis})
+        sb.insert("post_media", {"post_id": post["id"], "owner_id": g.user["id"], **info})
+    except Exception:
+        current_app.logger.exception("saving reel failed")
+        if post:
+            sb.delete("posts", id=post["id"])
+        cs.destroy(info.get("public_id"), "video", info.get("delivery_type", "upload"))   # don't leave an orphan file
+        return _fail("We couldn't save your reel. Please try again.", 500)
     social.grant_achievement(g.user["id"], "reel_maker")
+    if _wants_json():
+        return jsonify(ok=True, redirect=url_for("reels.index"))
     flash("Reel posted!", "success")
     return redirect(url_for("reels.index"))
