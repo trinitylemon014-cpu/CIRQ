@@ -462,3 +462,11 @@ dialog::backdrop { background: rgba(2, 8, 23, .78); backdrop-filter: blur(5px); 
 .rc-meta { display: grid; gap: 2px; margin-bottom: 8px; } .rc-meta b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rc-count { text-align: right; margin-top: 4px; }
 .rc-error { margin: 8px 0; padding: 10px 14px; border-radius: var(--r-sm); background: rgba(255, 70, 110, .14); border: 1px solid rgba(255, 70, 110, .5); color: #ff9db4; font-weight: 600; font-size: .9rem; }
+
+/* ---------- 13d. Suggested for you ---------- */
+.post.suggested { border-color: rgba(0, 217, 255, .35); }
+.sugg-tag { display: flex; align-items: center; gap: 10px; margin: -4px -4px 12px; padding: 10px 12px; border-radius: var(--r-md); background: linear-gradient(90deg, rgba(139, 44, 255, .22), rgba(0, 217, 255, .08)); }
+.sugg-tag .i { color: var(--cyan); flex: none; }
+.sugg-tag span { flex: 1; min-width: 0; display: grid; line-height: 1.25; }
+.sugg-tag small { color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.post.gone, .reel.gone { opacity: 0; transform: scale(.97); transition: opacity .3s, transform .3s; }
