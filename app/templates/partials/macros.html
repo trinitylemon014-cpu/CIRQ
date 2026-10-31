@@ -26,4 +26,7 @@
 <button type="button" class="icon-btn toggle-pw" data-toggle-pw="f-{{ name }}" aria-label="Show or hide password">{{ icon('eye') }}</button></div>
 {% endmacro %}
 
+{# One follow button everywhere. state: 'none' | 'requested' | 'following'. A private account shows "Requested" until approved. #}
+{% macro follow_btn(username, state='none', small=True, private=False) %}<button type="button" class="btn {{ 'sm' if small }} {{ 'following' if state != 'none' }}" data-follow="{{ username }}" data-state="{{ state }}" data-private="{{ 1 if private else 0 }}">{{ 'Following' if state == 'following' else ('Requested' if state == 'requested' else 'Follow') }}</button>{% endmacro %}
+
 {% macro report_btn(ttype, tid, label='Report') %}<button type="button" data-report="{{ ttype }}:{{ tid }}">{{ icon('flag','i-sm') }} {{ label }}</button>{% endmacro %}
