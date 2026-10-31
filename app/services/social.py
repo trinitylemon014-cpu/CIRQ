@@ -1,0 +1,105 @@
+"""Shared social helpers: visibility rules, hydration of posts, counters, achievements."""
+from flask import current_app
+from app.extensions import db
+from app.services import supabase_service as sb
+from app.services.notification_service import notify
+from app.utils import tier_for, iso
+
+
+def blocked_between(uid):
+    """IDs the viewer blocked plus IDs that blocked the viewer."""
+    mine = {r["blocked_id"] for r in sb.select("blocks", blocker_id=uid)}
+    theirs = {r["blocker_id"] for r in sb.select("blocks", blocked_id=uid)}
+    return mine | theirs
+
+
+def is_blocked(a, b):
+    return bool(sb.get("blocks", blocker_id=a, blocked_id=b) or sb.get("blocks", blocker_id=b, blocked_id=a))
+
+
+def follower_count(uid):
+    return sb.count("follows", followee_id=uid)
+
+
+def following_count(uid):
+    return sb.count("follows", follower_id=uid)
+
+
+def is_following(a, b):
+    return bool(sb.get("follows", follower_id=a, followee_id=b))
+
+
+def following_ids(uid):
+    return [r["followee_id"] for r in sb.select("follows", "followee_id", follower_id=uid)]
+
+
+def can_see_profile_content(viewer, target):
+    if viewer["id"] == target["id"] or viewer.get("role") in ("admin", "moderator"):
+        return True
+    if is_blocked(viewer["id"], target["id"]):
+        return False
+    return (not target.get("is_private")) or is_following(viewer["id"], target["id"])
+
+
+def can_view_post(viewer, post, author):
+    if post["author_id"] == viewer["id"] or viewer.get("role") in ("admin", "moderator"):
+        return True
+    if post["moderation_status"] != "ok" or not author or author["account_status"] != "approved":
+        return False
+    if is_blocked(viewer["id"], author["id"]):
+        return False
+    if post.get("community_id"):
+        return bool(sb.get("community_members", community_id=post["community_id"], user_id=viewer["id"]))
+    if post["visibility"] == "public" and not author.get("is_private"):
+        return True
+    return is_following(viewer["id"], author["id"])
+
+
+def hydrate_posts(posts, viewer_id):
+    if not posts:
+        return []
+    ids = [p["id"] for p in posts]
+    authors = sb.by_id("profiles", [p["author_id"] for p in posts])
+    media = {}
+    for m in sb.in_("post_media", "post_id", ids):
+        media.setdefault(m["post_id"], []).append(m)
+    liked = {r["post_id"] for r in sb.in_("likes", "post_id", ids) if r["user_id"] == viewer_id} if viewer_id else set()
+    schools = sb.by_id("schools", [a.get("school_id") for a in authors.values()])
+    out = []
+    for p in posts:
+        a = authors.get(p["author_id"])
+        if not a:
+            continue
+        out.append({**p, "author": a, "school": schools.get(a.get("school_id")), "media": media.get(p["id"], []),
+                    "liked": p["id"] in liked})
+    return out
+
+
+def profile_stats(profile):
+    n = follower_count(profile["id"])
+    return {"followers": n, "following": following_count(profile["id"]), "tier": tier_for(n)}
+
+
+def grant_achievement(user_id, code):
+    """Award an achievement once. Returns True when newly awarded."""
+    if sb.get("user_achievements", user_id=user_id, code=code):
+        return False
+    ach = sb.get("achievements", code=code)
+    if not ach:
+        return False
+    sb.insert("user_achievements", {"user_id": user_id, "code": code})
+    notify(user_id, "account", body=f"Achievement unlocked: {ach['name']}", dedupe=False)
+    return True
+
+
+def user_achievements(user_id):
+    mine = {r["code"]: r for r in sb.select("user_achievements", user_id=user_id)}
+    allach = sb.select("achievements")
+    return [{**a, "earned": a["code"] in mine, "awarded_at": mine.get(a["code"], {}).get("awarded_at")} for a in allach]
+
+
+def delete_post_media(post_id):
+    """Remove Cloudinary files for a post, then the rows (rows also cascade with the post)."""
+    from app.services import cloudinary_service as cs
+    for m in sb.select("post_media", post_id=post_id):
+        cs.destroy(m["public_id"], m["media_type"], m.get("delivery_type", "upload"))

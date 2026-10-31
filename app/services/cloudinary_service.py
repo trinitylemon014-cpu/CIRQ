@@ -1,0 +1,148 @@
+"""Cloudinary integration. Cloudinary stores the files; Supabase stores references (url, public_id, ...).
+
+Uploads are made server-side with the API secret, which never reaches the browser. Files are validated
+(extension, size, and real content signature) before they are sent. Chat attachments use Cloudinary's
+`authenticated` delivery type and are served through short-lived signed URLs.
+"""
+import io
+import logging
+import uuid
+import cloudinary
+import cloudinary.uploader
+import cloudinary.utils
+from flask import current_app
+from PIL import Image, UnidentifiedImageError
+
+log = logging.getLogger(__name__)
+
+IMAGE_EXT = {"jpg", "jpeg", "png", "webp", "gif"}
+VIDEO_EXT = {"mp4", "mov", "webm"}
+IMAGE_FORMATS = {"JPEG", "PNG", "WEBP", "GIF"}
+
+
+class UploadError(ValueError):
+    """Raised with a user-safe message when an upload is rejected."""
+
+
+def configure(app):
+    cfg = app.config
+    if cfg.get("CLOUDINARY_CLOUD_NAME"):
+        cloudinary.config(cloud_name=cfg["CLOUDINARY_CLOUD_NAME"], api_key=cfg["CLOUDINARY_API_KEY"],
+                          api_secret=cfg["CLOUDINARY_API_SECRET"], secure=True)
+
+
+def is_configured():
+    return bool(cloudinary.config().cloud_name)
+
+
+def _sniff_video(head):
+    if len(head) >= 12 and head[4:8] == b"ftyp":
+        return True  # mp4 / mov
+    return head[:4] == b"\x1a\x45\xdf\xa3"  # webm / matroska
+
+
+def validate(file_storage, allow_video=True, allow_image=True):
+    """Validate a Werkzeug FileStorage. Returns (kind, bytes_data, ext). Raises UploadError."""
+    if not file_storage or not file_storage.filename:
+        raise UploadError("Choose a file to upload.")
+    name = file_storage.filename.lower()
+    ext = name.rsplit(".", 1)[-1] if "." in name else ""
+    cfg = current_app.config
+    data = file_storage.read()
+    file_storage.seek(0)
+    if not data:
+        raise UploadError("That file is empty.")
+    if ext in IMAGE_EXT and allow_image:
+        if len(data) > cfg["MAX_IMAGE_MB"] * 1024 * 1024:
+            raise UploadError(f"Images can be up to {cfg['MAX_IMAGE_MB']} MB.")
+        try:
+            img = Image.open(io.BytesIO(data))
+            img.verify()
+            if img.format not in IMAGE_FORMATS:
+                raise UploadError("That image format isn't supported.")
+        except (UnidentifiedImageError, OSError, SyntaxError):
+            raise UploadError("That file isn't a valid image.")
+        return "image", data, ext
+    if ext in VIDEO_EXT and allow_video:
+        if len(data) > cfg["MAX_VIDEO_MB"] * 1024 * 1024:
+            raise UploadError(f"Videos can be up to {cfg['MAX_VIDEO_MB']} MB.")
+        if not _sniff_video(data[:16]):
+            raise UploadError("That file isn't a valid video.")
+        return "video", data, ext
+    allowed = []
+    if allow_image:
+        allowed += sorted(IMAGE_EXT)
+    if allow_video:
+        allowed += sorted(VIDEO_EXT)
+    raise UploadError("Unsupported file type. Allowed: " + ", ".join(allowed) + ".")
+
+
+def upload(file_storage, folder, owner_id, allow_video=True, allow_image=True, private=False):
+    """Validate and upload. Returns a dict ready to store in Supabase."""
+    kind, data, ext = validate(file_storage, allow_video, allow_image)
+    if not is_configured():
+        raise UploadError("Media uploads aren't configured on this server yet.")
+    delivery = "authenticated" if private else "upload"
+    try:
+        res = cloudinary.uploader.upload(
+            io.BytesIO(data), resource_type=kind, type=delivery, folder=f"cirq/{folder}",
+            public_id=f"{owner_id[:8]}_{uuid.uuid4().hex[:12]}", overwrite=False,
+            context={"owner": owner_id}, invalidate=True,
+        )
+    except Exception as exc:
+        log.error("cloudinary upload failed: %s", type(exc).__name__)
+        raise UploadError("Upload failed. Please try again.")
+    return {
+        "media_type": kind, "url": res.get("secure_url"), "public_id": res.get("public_id"),
+        "delivery_type": delivery, "bytes": res.get("bytes"), "width": res.get("width"),
+        "height": res.get("height"), "duration": res.get("duration"),
+    }
+
+
+def destroy(public_id, media_type="image", delivery_type="upload"):
+    """Delete an asset. Safe to call when Cloudinary isn't configured (returns False)."""
+    if not public_id or not is_configured():
+        return False
+    try:
+        cloudinary.uploader.destroy(public_id, resource_type="video" if media_type == "video" else "image",
+                                    type=delivery_type, invalidate=True)
+        return True
+    except Exception as exc:  # pragma: no cover
+        log.error("cloudinary delete failed: %s", type(exc).__name__)
+        return False
+
+
+def media_src(row, width=None, thumb=False):
+    """Responsive delivery URL for a media row (dict with url/public_id/media_type/delivery_type)."""
+    if not row:
+        return ""
+    if not (is_configured() and row.get("public_id")):
+        return row.get("url", "")
+    kind = row.get("media_type", "image")
+    delivery = row.get("delivery_type", "upload")
+    tr = {"fetch_format": "auto", "quality": "auto"}
+    if width:
+        tr.update(width=width, crop="limit")
+    opts = {"resource_type": "video" if kind == "video" else "image", "type": delivery, "secure": True}
+    if delivery == "authenticated":
+        opts.update(sign_url=True)
+    if kind == "video" and thumb:
+        tr.pop("fetch_format", None)
+        tr.update(width=width or 480, crop="fill", start_offset="0")
+        opts.update(transformation=[tr], format="jpg")   # the .jpg extension makes Cloudinary return a still frame
+        return cloudinary.utils.cloudinary_url(row["public_id"], **opts)[0]
+    if kind == "video":
+        tr.pop("fetch_format", None)
+        tr.update(video_codec="auto")
+    opts["transformation"] = [tr]
+    return cloudinary.utils.cloudinary_url(row["public_id"], **opts)[0]
+
+
+def avatar_src(profile, size=96):
+    if profile and profile.get("avatar_url"):
+        row = {"url": profile["avatar_url"], "public_id": profile.get("avatar_public_id"), "media_type": "image"}
+        if is_configured() and row["public_id"]:
+            return cloudinary.utils.cloudinary_url(row["public_id"], secure=True, transformation=[
+                {"width": size, "height": size, "crop": "fill", "gravity": "face", "fetch_format": "auto", "quality": "auto"}])[0]
+        return row["url"]
+    return ""

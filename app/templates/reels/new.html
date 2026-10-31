@@ -1,0 +1,7 @@
+{% extends 'base.html' %}{% import 'partials/macros.html' as m with context %}{% block title %}New reel{% endblock %}
+{% block content %}<h1 class="page-title">Upload a reel</h1>
+<form class="card" method="post" action="{{ url_for('reels.create') }}" enctype="multipart/form-data">{{ m.csrf() }}
+  <label class="file-drop">{{ m.icon('film') }}<span data-file-label>Choose a vertical video (MP4, MOV, WebM · up to {{ config.MAX_VIDEO_MB }} MB)</span><input type="file" name="video" accept="video/mp4,video/quicktime,video/webm" required></label>
+  <label for="f-cap">Caption</label><textarea class="input" id="f-cap" name="caption" maxlength="300" placeholder="Say something about your reel"></textarea>
+  <p class="hint">Your reel is public unless your profile is followers-only. Videos are optimised automatically.</p>
+  <button class="btn block" style="margin-top:12px">Post reel</button></form>{% endblock %}
