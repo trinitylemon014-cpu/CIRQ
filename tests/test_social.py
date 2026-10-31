@@ -99,7 +99,7 @@ def test_blocked_words_and_phone_numbers_rejected(as_user, db):
 def test_follow_unfollow_and_counts(as_user, db):
     a, pa = as_user("alice"); b, pb = as_user("bob")
     r = a.post("/u/bob/follow", headers={"X-Requested-With": "fetch"}).get_json()
-    assert r == {"following": True, "followers": 1}
+    assert r == {"following": True, "requested": False, "state": "following", "followers": 1}
     assert a.post("/u/bob/follow", headers={"X-Requested-With": "fetch"}).get_json()["following"] is False
     assert a.post("/u/alice/follow").status_code == 400                  # can't follow yourself
     a.post("/u/bob/follow")
@@ -119,7 +119,7 @@ def test_followers_only_post_visibility(as_user, db):
 def test_private_profile_hides_content(as_user, db):
     a, pa = as_user("alice"); b, _ = as_user("bob")
     post(a, "visible?")
-    a.post("/settings", data={"action": "profile", "display_name": "Alice", "is_private": "on"})
+    a.post("/settings", data={"action": "privacy", "is_private": "on"})
     assert db.data["posts"][0]["visibility"] == "followers"
     assert b"private" in b.get("/u/alice").data.lower() and b"visible?" not in b.get("/u/alice").data
 
