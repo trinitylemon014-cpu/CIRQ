@@ -643,3 +643,33 @@ drop policy if exists boosts_own on boosts; create policy boosts_own on boosts f
 --   password_reset_requests, email_verifications, audit_logs, game_rounds, game_guesses,
 --   payer_numbers (private phone numbers), payments, trivia_entry_credits, trivia_questions (hold the answers),
 --   trivia_answers. Reads of these always go through the Flask server.
+
+
+-- ---------- Personalised suggestions (what a student likes -> similar posts) ----------
+-- Only on-platform behaviour is used. Students can switch it off or reset it in Settings.
+alter table profiles add column if not exists personalized_recs boolean not null default true;
+
+create table if not exists post_signals (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references profiles(id) on delete cascade,
+  post_id uuid not null references posts(id) on delete cascade,
+  author_id uuid not null references profiles(id) on delete cascade,
+  event text not null check (event in ('impression','view','watch','like','comment','share','hide')),
+  value numeric not null default 0,                -- view: dwell ms, watch: completion ratio (1 = watched fully)
+  created_at timestamptz not null default now()
+);
+create index if not exists post_signals_user_idx on post_signals(user_id, created_at desc);
+create index if not exists post_signals_user_event_idx on post_signals(user_id, event, created_at desc);
+
+create table if not exists user_interests (
+  user_id uuid not null references profiles(id) on delete cascade,
+  dim text not null check (dim in ('author','topic','school','kind')),
+  key text not null,
+  weight double precision not null default 0,      -- decays with a 14-day half-life when read
+  updated_at timestamptz not null default now(),
+  primary key (user_id, dim, key)
+);
+create index if not exists user_interests_user_idx on user_interests(user_id, updated_at desc);
+
+alter table post_signals enable row level security;      -- no policies: only the server (service role) can touch these
+alter table user_interests enable row level security;
