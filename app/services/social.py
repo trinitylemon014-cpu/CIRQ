@@ -33,6 +33,61 @@ def following_ids(uid):
     return [r["followee_id"] for r in sb.select("follows", "followee_id", follower_id=uid)]
 
 
+def has_requested(requester_id, target_id):
+    return bool(sb.get("follow_requests", requester_id=requester_id, target_id=target_id))
+
+
+def follow_state(viewer_id, target_id):
+    """What the Follow button should say: 'following', 'requested' (pending on a private account) or 'none'."""
+    if is_following(viewer_id, target_id):
+        return "following"
+    return "requested" if has_requested(viewer_id, target_id) else "none"
+
+
+def requested_ids(uid):
+    """IDs of private accounts this person has a pending follow request with."""
+    return {r["target_id"] for r in sb.select("follow_requests", "target_id", requester_id=uid)}
+
+
+def pending_request_count(uid):
+    return sb.count("follow_requests", target_id=uid)
+
+
+def remove_follow_request(requester_id, target_id):
+    """Withdraw (by the requester) or decline (by the target). Also clears the target's unread request alert."""
+    existed = has_requested(requester_id, target_id)
+    sb.delete("follow_requests", requester_id=requester_id, target_id=target_id)
+    sb.delete("notifications", user_id=target_id, kind="follow_request", actor_id=requester_id, read_at=None)
+    return existed
+
+
+def approve_follow_request(requester_id, target_id):
+    """Turn a pending request into a real follow. Returns False when there was no request to approve."""
+    if not has_requested(requester_id, target_id):
+        return False
+    sb.delete("follow_requests", requester_id=requester_id, target_id=target_id)
+    sb.delete("notifications", user_id=target_id, kind="follow_request", actor_id=requester_id)
+    if is_blocked(requester_id, target_id) or is_following(requester_id, target_id):
+        return True
+    sb.insert("follows", {"follower_id": requester_id, "followee_id": target_id})
+    notify(requester_id, "follow_accepted", target_id, "profile", target_id)
+    grant_achievement(requester_id, "first_follow")
+    grant_achievement(target_id, "first_follower")
+    return True
+
+
+def can_message(sender, recipient):
+    """May `sender` start or continue a direct chat with `recipient`?
+
+    Public accounts can be messaged by anyone who isn't blocked. A PRIVATE account only chats with people it
+    has approved as followers (or people it follows itself), so a pending request never opens a chat."""
+    if sender["id"] == recipient["id"] or is_blocked(sender["id"], recipient["id"]):
+        return False
+    if not recipient.get("is_private"):
+        return True
+    return is_following(sender["id"], recipient["id"]) or is_following(recipient["id"], sender["id"])
+
+
 def can_see_profile_content(viewer, target):
     if viewer["id"] == target["id"] or viewer.get("role") in ("admin", "moderator"):
         return True
