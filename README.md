@@ -24,7 +24,10 @@ app coins, boosts and CIRQ STATUS ranks, with an admin dashboard and safety tool
 | **Admin-approved password recovery** (request → admin review → single-use, expiring emailed link → reset → audit) + manual-review path | Implemented, tested |
 | Feed: text/photo/video posts, edit/delete, likes, comments, follow, block, report, pagination | Implemented, tested |
 | Reels (vertical, lazy-loaded, muted by default), Stories (24 h, story tray, viewer, view tracking, cleanup job) | Implemented, tested (reels/stories UI only visually checked) |
-| Profiles, privacy ("followers-only"), settings, change password, **delete my account** | Implemented, tested |
+| Profiles, settings, change password, **delete my account** | Implemented, tested |
+| **Private accounts + follow requests** (Instagram-style: Follow → Requested → owner confirms/deletes; chat opens only after approval) | Implemented, tested (incl. headless-browser check) |
+| **Story likes, liker list, and story replies that land in the owner's inbox** | Implemented, tested (incl. headless-browser check) |
+| **Suggested for you** (learns from likes, comments, watch time, "Not interested"; explainable reasons; can be switched off/reset) | Implemented, tested |
 | Discover (people / schools / popular / events, search, filters) | Implemented, tested |
 | Schools, communities, announcements, community chat, school verification requests | Implemented, tested |
 | LINKUP events: create, RSVP, capacity, cancel/complete, event group chat, share link, report | Implemented, tested |
@@ -87,6 +90,9 @@ cirq/
 2. **SQL Editor → New query →** paste all of `schema.sql` → **Run**. It creates every table, index, trigger, the
    `cirq_apply_coins` function, seed rows and Row Level Security. Re-running is safe. Order inside the file is
    extensions → tables → indexes/triggers → seed data → RLS.
+   **Already have a project from an older `schema.sql`?** Don't re-create it: run
+   `migrations/2026_10_31_story_likes_follow_requests_suggestions.sql` once instead (same SQL Editor, safe to re-run). It adds follow
+   requests, story likes, the story-reply columns on `messages`, and the suggestion tables.
 3. **Project Settings → API**: copy the Project URL into `SUPABASE_URL`, the anon/publishable key into
    `SUPABASE_ANON_KEY`, and the service-role/secret key into `SUPABASE_SERVICE_ROLE_KEY`.
    The service-role key is **server only**: never put it in a template, JavaScript or a screenshot.
@@ -180,6 +186,20 @@ git push -u origin main
 
 ## 13. How the main flows work
 
+**Private accounts (Instagram flow).** *Settings → Account privacy → Private account.* While private: tapping **Follow** sends a request
+and the button reads **Requested** (tap again to cancel); the owner gets a "requested to follow you" alert and a **Follow requests** row at the
+top of Activity (`/follow-requests`) with **Confirm** / **Delete**. Confirming creates the follow and notifies the requester. Until then the
+requester can't see posts, stories or reels, can't open the story viewer, and **can't start or continue a chat** with the owner (the Message button
+is locked and the thread shows why). The owner can always message people they follow. Existing followers stay; public posts become followers-only;
+switching back to public approves everyone who was waiting. Blocking someone clears any pending request. Private accounts are never recommended
+to strangers.
+
+**Story likes, activity and replies.** Viewers get a heart and a reply box under every story. A like notifies the owner once (unliking withdraws an
+unread alert). The owner (only) sees a view and like count on the story and can open **Story activity** with **Viewers** / **Likes** tabs listing
+exactly who. A reply is delivered as a normal direct message flagged "Replied to your story" (with a thumbnail while the story is live), so it shows up
+in the owner's **Messages** inbox with the unread badge. The story pauses while the viewer types. Likes/replies follow the same rules as viewing:
+expired, removed, blocked or private-and-unapproved stories return 404.
+
 **Password recovery.** Student gives username, school and the registered email (or "I can't use that email" + their name + a note) →
 a `pending` request is stored (no password or token) and the screen *always* says the same thing, so usernames can't be probed →
 admin reviews under **Admin → Password resets**, approves or rejects with a note → on approval the server emails a single-use link
@@ -244,7 +264,9 @@ See `.env.example` for the full list with comments. Required in production: `SEC
 
 * Live integrations (Supabase, Cloudinary, SMTP, Render) are **untested by me**; the tests use fakes. The fake mirrors the schema's
   defaults, unique rules, counter triggers and coin function, but a real database can still differ, so run the checklist in section 12.
-* "Followers-only" profiles still let anyone follow (no follow-request approval yet). Block is the safety valve.
+* Private accounts hide posts, reels, stories and chat until approved, but (like Instagram) the name, photo, bio, school and follower counts stay visible so people can find the account to request it. Stories shown in the tray come only from people you follow.
+* Story likes are one-tap hearts (no reaction types) and story replies are text only (no attachments). Story views/likes disappear with the story after 24 hours.
+* "Suggested for you" learns only from on-platform behaviour and needs a little activity before it's accurate; it is rule-based (explainable), not a trained model.
 * Reel view counts aren't tracked (no consistent way to count them yet). One media file per post.
 * Chat uses 4-second polling, not Supabase Realtime. Some pages make several small queries (fine for thousands of students, not millions).
 * Email isn't verified at sign-up unless SMTP is configured; unverified accounts use the manual-review recovery path.
