@@ -1,5 +1,7 @@
 {% import 'partials/macros.html' as m with context %}
-<article class="card post" id="post-{{ p.id }}">
+<article class="card post{{ ' suggested' if p.suggested }}" id="post-{{ p.id }}" data-post-id="{{ p.id }}">
+  {% if p.suggested %}<div class="sugg-tag">{{ m.icon('rocket','i-sm') }}<span><b>Suggested for you</b><small>{{ p.reason }}</small></span>
+    {% if p.author_id != cur.id %}<button class="btn sm" type="button" data-follow="{{ p.author.username }}" data-following="0">Follow</button>{% endif %}</div>{% endif %}
   <div class="post-head">
     <a href="{{ url_for('profiles.view', username=p.author.username) }}">{{ m.avatar(p.author, 46) }}</a>
     <div class="who"><a href="{{ url_for('profiles.view', username=p.author.username) }}"><b>{{ p.author.display_name }}</b>{{ m.verified(p.author) }}</a>
@@ -11,7 +13,7 @@
         {% if p.author_id == cur.id %}
           {% if not hide_edit %}<button type="button" data-edit-post="{{ p.id }}">{{ m.icon('edit','i-sm') }} Edit</button>{% endif %}
           <form method="post" action="{{ url_for('feed.delete_post', post_id=p.id) }}" data-confirm="Delete this post? This can't be undone.">{{ m.csrf() }}<button class="danger">{{ m.icon('trash','i-sm') }} Delete</button></form>
-        {% else %}{{ m.report_btn('post', p.id) }}{% endif %}
+        {% else %}<button type="button" data-not-interested="{{ p.id }}">{{ m.icon('x','i-sm') }} Not interested</button>{{ m.report_btn('post', p.id) }}{% endif %}
       </div>
     </div>
   </div>
