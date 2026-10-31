@@ -118,15 +118,30 @@
 
     const fol = c("[data-follow]");
     if (fol) {
+      const who = fol.dataset.follow, state0 = fol.dataset.state || "none";
+      // Instagram asks before you drop out of a private account (you'd have to ask again), and before cancelling a request.
+      if (state0 === "following" && fol.dataset.private === "1" && !confirm(`If you unfollow @${who}, you'll need to send a new request to follow them again.`)) return;
       fol.disabled = true;
       try {
-        const r = await api(`/u/${fol.dataset.follow}/follow`);
-        $$(`[data-follow="${fol.dataset.follow}"]`).forEach((b) => {
-          b.textContent = r.following ? "Following" : "Follow"; b.classList.toggle("following", r.following); b.dataset.following = r.following ? 1 : 0;
-        });
+        const r = await api(`/u/${who}/follow`);
+        const label = { none: "Follow", requested: "Requested", following: "Following" }[r.state] || "Follow";
+        $$(`[data-follow="${who}"]`).forEach((b) => { b.textContent = label; b.classList.toggle("following", r.state !== "none"); b.dataset.state = r.state; });
         const n = $("[data-followers]"); if (n) n.textContent = r.followers;
+        if (r.state === "requested") toast(`Request sent to @${who}`, "success");
       } catch (err) { toast(err.message, "error"); }
       fol.disabled = false; return;
+    }
+
+    const reqBtn = c("[data-req-approve],[data-req-decline]");
+    if (reqBtn) {            // follow requests page: Confirm / Delete
+      const approve = reqBtn.hasAttribute("data-req-approve"), who = reqBtn.dataset.reqApprove || reqBtn.dataset.reqDecline, row = c("[data-request]");
+      $$("button", row).forEach((b) => (b.disabled = true));
+      try {
+        const r = await api(`/follow-requests/${who}/${approve ? "approve" : "decline"}`);
+        row.remove(); toast(approve ? `@${who} can now follow you and chat with you.` : "Request deleted.", approve ? "success" : "info");
+        const empty = $("[data-requests-empty]"); if (empty && !r.remaining) empty.hidden = false;
+      } catch (err) { $$("button", row).forEach((b) => (b.disabled = false)); toast(err.message, "error"); }
+      return;
     }
 
     const edit = c("[data-edit-post]");
@@ -191,26 +206,65 @@
     btn.disabled = false; btn.textContent = "Load more";
   }
 
-  /* ---------- stories ---------- */
+  /* ---------- stories: view, like, reply to the owner's inbox, owner insights ---------- */
   let viewer;
+  const S = { items: [], i: 0, timer: null, user: null, t0: 0, dur: 5000, left: 0, paused: false };
+  const SVG = (n, cls = "") => `<svg class="i ${cls}" aria-hidden="true"><use href="#i-${n}"/></svg>`;
   function ensureViewer() {
     if (viewer) return viewer;
     viewer = document.createElement("div"); viewer.className = "story-viewer"; viewer.setAttribute("role", "dialog"); viewer.setAttribute("aria-label", "Story");
-    viewer.innerHTML = `<div class="story-box"><div class="story-bars"></div><div class="story-head"><span class="av" style="--s:38px"></span><b data-su></b><span class="grow"></span><button class="icon-btn" data-sdel hidden aria-label="Delete story" style="color:#fff">🗑</button><button class="icon-btn" data-sclose aria-label="Close" style="color:#fff">✕</button></div>
+    viewer.innerHTML = `<div class="story-box"><div class="story-bars"></div><div class="story-head"><span class="av" style="--s:38px"></span><b data-su></b><span class="grow"></span><button class="icon-btn" data-sdel hidden aria-label="Delete story" style="color:#fff">${SVG("trash")}</button><button class="icon-btn" data-sclose aria-label="Close" style="color:#fff">${SVG("x")}</button></div>
       <div data-smedia style="width:100%;height:100%"></div><div class="story-cap" data-scap></div>
-      <button class="story-hit prev" aria-label="Previous"></button><button class="story-hit next" aria-label="Next"></button></div>`;
+      <button class="story-hit prev" aria-label="Previous"></button><button class="story-hit next" aria-label="Next"></button>
+      <div class="story-foot">
+        <form class="story-reply" data-sreply hidden autocomplete="off"><input name="body" maxlength="500" placeholder="Send message…" aria-label="Reply to this story"><button class="icon-btn" aria-label="Send reply">${SVG("send")}</button></form>
+        <button class="story-like" type="button" data-slike hidden aria-label="Like story" aria-pressed="false">${SVG("heart")}</button>
+        <button class="story-stats" type="button" data-sinsights hidden aria-label="See who viewed and liked this story">${SVG("eye")}<b data-sviews>0</b>${SVG("heart")}<b data-slikes>0</b></button>
+      </div>
+      <div class="story-sheet" data-ssheet hidden>
+        <div class="row between"><b>Story activity</b><button class="icon-btn" type="button" data-ssheet-close aria-label="Close activity">${SVG("x")}</button></div>
+        <div class="tabs mini"><button type="button" class="active" data-stab="viewers">Viewers <span data-tv>0</span></button><button type="button" data-stab="likes">Likes <span data-tl>0</span></button></div>
+        <div class="sheet-list" data-slist></div>
+      </div></div>`;
     document.body.append(viewer);
     $("[data-sclose]", viewer).onclick = closeStory;
     viewer.addEventListener("click", (e) => { if (e.target === viewer) closeStory(); });
-    document.addEventListener("keydown", (e) => { if (!viewer.classList.contains("open")) return; if (e.key === "Escape") closeStory(); if (e.key === "ArrowRight") step(1); if (e.key === "ArrowLeft") step(-1); });
+    document.addEventListener("keydown", (e) => {
+      if (!viewer.classList.contains("open")) return;
+      if (e.key === "Escape") { const sh = $("[data-ssheet]", viewer); if (!sh.hidden) closeSheet(); else closeStory(); return; }
+      if (/INPUT|TEXTAREA/.test(e.target.tagName || "")) return;    // typing a reply: arrows move the cursor, not the story
+      if (e.key === "ArrowRight") step(1); if (e.key === "ArrowLeft") step(-1);
+    });
     $(".next", viewer).onclick = () => step(1); $(".prev", viewer).onclick = () => step(-1);
     $("[data-sdel]", viewer).onclick = async () => {
       if (!confirm("Delete this story?")) return;
       try { await api(`/stories/${S.items[S.i].id}/delete`); toast("Story deleted", "success"); closeStory(); location.reload(); } catch (err) { toast(err.message, "error"); }
     };
+    // like
+    $("[data-slike]", viewer).onclick = async (e) => {
+      const btn = e.currentTarget, s = S.items[S.i], want = !s.liked;
+      s.liked = want; paintLike(btn, want);                                // instant, rolled back if the server says no
+      try { const r = await api(`/stories/${s.id}/like`); s.liked = r.liked; paintLike(btn, r.liked); }
+      catch (err) { s.liked = !want; paintLike(btn, !want); toast(err.message, "error"); }
+    };
+    // reply -> the owner's inbox. The story waits (like Instagram) while you type.
+    const form = $("[data-sreply]", viewer), input = $("input", form);
+    input.addEventListener("focus", pauseStory);
+    input.addEventListener("blur", () => { if ($("[data-ssheet]", viewer).hidden) resumeStory(); });
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault(); const body = input.value.trim(); if (!body) return;
+      const btn = $("button", form); btn.disabled = true;
+      try { await api(`/stories/${S.items[S.i].id}/reply`, { body: new FormData(form) }); input.value = ""; input.blur(); toast(`Reply sent to @${S.user.user.username}`, "success"); }
+      catch (err) { toast(err.message, "error"); }
+      btn.disabled = false;
+    });
+    // owner insights
+    $("[data-sinsights]", viewer).onclick = openInsights;
+    $("[data-ssheet-close]", viewer).onclick = closeSheet;
+    $$("[data-stab]", viewer).forEach((b) => b.addEventListener("click", () => { $$("[data-stab]", viewer).forEach((x) => x.classList.toggle("active", x === b)); renderList(b.dataset.stab); }));
     return viewer;
   }
-  const S = { items: [], i: 0, timer: null, user: null };
+  const paintLike = (btn, on) => { btn.classList.toggle("on", on); btn.setAttribute("aria-pressed", on ? "true" : "false"); btn.setAttribute("aria-label", on ? "Unlike story" : "Like story"); };
   async function openStory(username) {
     ensureViewer();
     try {
@@ -218,30 +272,72 @@
       if (!r.stories.length) { toast("No active stories", "info"); return; }
       S.items = r.stories; S.i = Math.max(0, r.stories.findIndex((s) => !s.seen)); S.user = r;
       $("[data-su]", viewer).textContent = r.user.username; const av = $(".av", viewer);
-      av.innerHTML = r.user.avatar ? `<img src="${r.user.avatar}" alt="">` : r.user.username[0]; $("[data-sdel]", viewer).hidden = !r.me;
+      av.textContent = ""; if (r.user.avatar) { const im = document.createElement("img"); im.src = r.user.avatar; im.alt = ""; av.append(im); } else av.textContent = r.user.username[0];
+      $("[data-sdel]", viewer).hidden = !r.me;
+      $("[data-sreply]", viewer).hidden = r.me || !r.can_reply;
+      $("[data-sreply] input", viewer).placeholder = `Reply to ${r.user.username}…`;
+      $("[data-slike]", viewer).hidden = r.me; $("[data-sinsights]", viewer).hidden = !r.me;
       viewer.classList.add("open"); document.body.style.overflow = "hidden"; show();
     } catch (err) { toast(err.message, "error"); }
   }
   function show() {
-    clearTimeout(S.timer);
+    clearTimeout(S.timer); S.paused = false; closeSheet(true);
     const s = S.items[S.i]; const bars = $(".story-bars", viewer);
     bars.innerHTML = S.items.map((_, k) => `<i><b style="width:${k < S.i ? 100 : 0}%"></b></i>`).join("");
     const holder = $("[data-smedia]", viewer); holder.innerHTML = "";
-    let dur = 5000;
     if (s.type === "video") {
       const v = document.createElement("video"); v.src = s.src; v.autoplay = true; v.playsInline = true; v.controls = false; holder.append(v);
-      v.onloadedmetadata = () => { dur = Math.min(30000, (v.duration || 8) * 1000); run(dur); }; v.onended = () => step(1); v.onerror = () => run(4000);
-    } else { const im = document.createElement("img"); im.src = s.src; im.alt = "Story"; holder.append(im); run(dur); }
+      v.onloadedmetadata = () => run(Math.min(30000, (v.duration || 8) * 1000)); v.onended = () => { if (!S.paused) step(1); }; v.onerror = () => run(4000);
+    } else { const im = document.createElement("img"); im.src = s.src; im.alt = "Story"; holder.append(im); run(5000); }
     $("[data-scap]", viewer).textContent = s.caption || "";
+    paintLike($("[data-slike]", viewer), !!s.liked);
+    $("[data-sviews]", viewer).textContent = s.views ?? 0; $("[data-slikes]", viewer).textContent = s.likes ?? 0;
+    $("[data-sreply] input", viewer).value = "";
     api(`/stories/${s.id}/view`).catch(() => {});
   }
   function run(ms) {
     const b = $$(".story-bars b", viewer)[S.i]; if (!b) return;
+    S.t0 = performance.now(); S.dur = ms;
     b.style.transition = `width ${ms}ms linear`; requestAnimationFrame(() => requestAnimationFrame(() => (b.style.width = "100%")));
     S.timer = setTimeout(() => step(1), ms);
   }
+  function pauseStory() {      // freeze the timer, progress bar and video exactly where they are
+    if (S.paused || !viewer.classList.contains("open")) return; S.paused = true; clearTimeout(S.timer);
+    S.left = Math.max(400, S.dur - (performance.now() - S.t0));
+    const b = $$(".story-bars b", viewer)[S.i]; if (b) { const w = getComputedStyle(b).width; b.style.transition = "none"; b.style.width = w; }
+    const v = $("video", viewer); v && v.pause();
+  }
+  function resumeStory() {
+    if (!S.paused || !viewer.classList.contains("open")) return; S.paused = false;
+    const v = $("video", viewer); v && v.play().catch(() => {});
+    const b = $$(".story-bars b", viewer)[S.i];
+    if (b) { S.t0 = performance.now(); S.dur = S.left; b.style.transition = `width ${S.left}ms linear`; requestAnimationFrame(() => requestAnimationFrame(() => (b.style.width = "100%"))); S.timer = setTimeout(() => step(1), S.left); }
+  }
+  let insights = null;
+  async function openInsights() {
+    pauseStory(); const sh = $("[data-ssheet]", viewer); sh.hidden = false;
+    $$("[data-stab]", viewer).forEach((x) => x.classList.toggle("active", x.dataset.stab === "viewers"));
+    const list = $("[data-slist]", viewer); list.textContent = "Loading…"; insights = null;
+    try { insights = await api(`/stories/${S.items[S.i].id}/insights`, { method: "GET" }); $("[data-tv]", viewer).textContent = insights.views; $("[data-tl]", viewer).textContent = insights.likes; renderList("viewers"); }
+    catch (err) { list.textContent = err.message; }
+  }
+  function renderList(kind) {   // names come from the server: always set as text, never as HTML
+    const list = $("[data-slist]", viewer); list.textContent = ""; if (!insights) return;
+    const rows = kind === "likes" ? insights.likers : insights.viewers;
+    if (!rows.length) { const p = document.createElement("p"); p.className = "muted"; p.textContent = kind === "likes" ? "No likes yet." : "No views yet."; list.append(p); return; }
+    rows.forEach((u) => {
+      const row = document.createElement("a"); row.className = "person"; row.href = `/u/${u.username}`;
+      const av = document.createElement("span"); av.className = "av"; av.style.setProperty("--s", "40px");
+      if (u.avatar) { const im = document.createElement("img"); im.src = u.avatar; im.alt = ""; av.append(im); } else av.textContent = u.username[0];
+      const meta = document.createElement("div"); meta.className = "grow"; const b = document.createElement("b"); b.textContent = u.name; const sm = document.createElement("small"); sm.className = "muted"; sm.textContent = `@${u.username} · ${u.ago}`;
+      meta.append(b, document.createElement("br"), sm); row.append(av, meta);
+      if (u.liked) { const h = document.createElement("span"); h.className = "liked-heart"; h.innerHTML = SVG("heart", "fill"); h.title = "Liked"; row.append(h); }
+      list.append(row);
+    });
+  }
+  function closeSheet(silent) { const sh = $("[data-ssheet]", viewer); if (sh.hidden) return; sh.hidden = true; if (!silent) resumeStory(); }
   function step(d) { S.i += d; if (S.i < 0) S.i = 0; if (S.i >= S.items.length) closeStory(); else show(); }
-  function closeStory() { clearTimeout(S.timer); viewer.classList.remove("open"); $("[data-smedia]", viewer).innerHTML = ""; document.body.style.overflow = ""; }
+  function closeStory() { clearTimeout(S.timer); S.paused = false; closeSheet(true); viewer.classList.remove("open"); $("[data-smedia]", viewer).innerHTML = ""; document.body.style.overflow = ""; }
 
   /* ---------- reels feed: Instagram-style playback ---------- */
   const reels = $("#reels");
