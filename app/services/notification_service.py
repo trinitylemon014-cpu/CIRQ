@@ -3,7 +3,10 @@ from app.utils import iso
 
 COPY = {
     "follow": "started following you",
+    "follow_request": "requested to follow you",
+    "follow_accepted": "accepted your follow request",
     "like": "liked your post",
+    "story_like": "liked your story",
     "comment": "commented on your post",
     "message": "sent you a message",
     "rsvp": "responded to your event",
