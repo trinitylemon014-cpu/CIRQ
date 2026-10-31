@@ -16,7 +16,9 @@ from PIL import Image, UnidentifiedImageError
 log = logging.getLogger(__name__)
 
 IMAGE_EXT = {"jpg", "jpeg", "png", "webp", "gif"}
-VIDEO_EXT = {"mp4", "mov", "webm"}
+VIDEO_EXT = {"mp4", "mov", "m4v", "webm"}
+REEL_WIDTH = 540            # delivery width for reels; the eager (pre-built) version uses the same value
+UPLOAD_TIMEOUT = 100        # seconds; keep below the gunicorn timeout (120)
 IMAGE_FORMATS = {"JPEG", "PNG", "WEBP", "GIF"}
 
 
@@ -77,20 +79,31 @@ def validate(file_storage, allow_video=True, allow_image=True):
     raise UploadError("Unsupported file type. Allowed: " + ", ".join(allowed) + ".")
 
 
+def _reel_transform(width=REEL_WIDTH):
+    """One definition shared by the pre-built (eager) copy and the delivery URL, so they always match.
+    H.264 + AAC in an MP4 plays on every phone and browser, even when the original is an iPhone HEVC .mov."""
+    return {"width": width, "crop": "limit", "quality": "auto", "video_codec": "h264", "audio_codec": "aac", "format": "mp4"}
+
+
 def upload(file_storage, folder, owner_id, allow_video=True, allow_image=True, private=False):
     """Validate and upload. Returns a dict ready to store in Supabase."""
     kind, data, ext = validate(file_storage, allow_video, allow_image)
     if not is_configured():
         raise UploadError("Media uploads aren't configured on this server yet.")
     delivery = "authenticated" if private else "upload"
+    opts = dict(
+        resource_type=kind, type=delivery, folder=f"cirq/{folder}",
+        public_id=f"{owner_id[:8]}_{uuid.uuid4().hex[:12]}", overwrite=False,
+        context={"owner": owner_id}, invalidate=True, timeout=UPLOAD_TIMEOUT,
+    )
+    if kind == "video" and folder == "reels" and not private:
+        # Build the phone-friendly MP4 in the background right after upload, so the first viewer
+        # doesn't wait for (or hit the size limit of) an on-the-fly conversion.
+        opts.update(eager=[_reel_transform()], eager_async=True)
     try:
-        res = cloudinary.uploader.upload(
-            io.BytesIO(data), resource_type=kind, type=delivery, folder=f"cirq/{folder}",
-            public_id=f"{owner_id[:8]}_{uuid.uuid4().hex[:12]}", overwrite=False,
-            context={"owner": owner_id}, invalidate=True,
-        )
+        res = cloudinary.uploader.upload(io.BytesIO(data), **opts)
     except Exception as exc:
-        log.error("cloudinary upload failed: %s", type(exc).__name__)
+        log.error("cloudinary upload failed: %s: %s", type(exc).__name__, str(exc)[:300])
         raise UploadError("Upload failed. Please try again.")
     return {
         "media_type": kind, "url": res.get("secure_url"), "public_id": res.get("public_id"),
@@ -132,8 +145,10 @@ def media_src(row, width=None, thumb=False):
         opts.update(transformation=[tr], format="jpg")   # the .jpg extension makes Cloudinary return a still frame
         return cloudinary.utils.cloudinary_url(row["public_id"], **opts)[0]
     if kind == "video":
-        tr.pop("fetch_format", None)
-        tr.update(video_codec="auto")
+        # Always deliver H.264/AAC MP4. Without an explicit format Cloudinary returns the original file,
+        # which for phone uploads (HEVC .mov etc.) will not play in most browsers.
+        tr = _reel_transform(width) if width else _reel_transform(REEL_WIDTH)
+        opts["format"] = tr.pop("format")
     opts["transformation"] = [tr]
     return cloudinary.utils.cloudinary_url(row["public_id"], **opts)[0]
 
