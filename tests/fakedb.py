@@ -13,7 +13,7 @@ NOW = lambda: datetime.now(timezone.utc).isoformat()
 
 DEFAULTS = {
     "profiles": dict(role="student", account_status="pending", verified=False, is_private=False, session_epoch=0, coin_balance=0,
-                     boosted_until=None, email_verified_at=None, bio=None, avatar_url=None, avatar_public_id=None, school_id=None, status_note=None),
+                     boosted_until=None, personalized_recs=True, email_verified_at=None, bio=None, avatar_url=None, avatar_public_id=None, school_id=None, status_note=None),
     "posts": dict(kind="post", visibility="public", moderation_status="ok", like_count=0, comment_count=0, is_announcement=False,
                   community_id=None, edited_at=None, caption=None),
     "comments": dict(moderation_status="ok"),
@@ -41,7 +41,7 @@ DEFAULTS = {
 }
 PKS = {"likes": ("post_id", "user_id"), "follows": ("follower_id", "followee_id"), "blocks": ("blocker_id", "blocked_id"),
        "community_members": ("community_id", "user_id"), "conversation_members": ("conversation_id", "user_id"),
-       "event_rsvps": ("event_id", "user_id"), "story_views": ("story_id", "viewer_id"), "user_achievements": ("user_id", "code"),
+       "event_rsvps": ("event_id", "user_id"), "user_interests": ("user_id", "dim", "key"), "story_views": ("story_id", "viewer_id"), "user_achievements": ("user_id", "code"),
        "feature_flags": ("key",), "achievements": ("code",)}
 UNIQUES = {"profiles": [("username",)], "schools": [("slug",), ("name",)], "game_guesses": [("round_id", "card_index")],
            "trivia_answers": [("attempt_id", "question_id")], "trivia_attempts": [("set_id", "user_id")],
@@ -106,6 +106,11 @@ class Query:
             items = self.payload if isinstance(self.payload, list) else [self.payload]
             out = [self.db._insert(self.table, i) for i in items]
             return SimpleNamespace(data=copy.deepcopy(out), count=None)
+        if self.op == "upsert" and isinstance(self.payload, list):
+            out = []
+            for item in self.payload:
+                out += Query(self.db, self.table).upsert(item, self.on_conflict).execute().data
+            return SimpleNamespace(data=out, count=None)
         if self.op == "upsert":
             keys = self.on_conflict.split(",") if self.on_conflict else list(PKS.get(self.table, ("id",)))
             ex = next((r for r in rows if all(r.get(k) == self.payload.get(k) for k in keys)), None)
