@@ -55,11 +55,13 @@ def count(table, **eq):
     return _filter(db().table(table).select("*", count="exact"), eq).limit(1).execute().count or 0
 
 
-def in_(table, col, values, cols="*"):
+def in_(table, col, values, cols="*", chunk=80):
+    """`col IN (values)`. Long lists are split into several requests so the URL never exceeds proxy limits."""
     values = list({v for v in values if v is not None})
-    if not values:
-        return []
-    return db().table(table).select(cols).in_(col, values).execute().data or []
+    out = []
+    for i in range(0, len(values), chunk):
+        out += db().table(table).select(cols).in_(col, values[i:i + chunk]).execute().data or []
+    return out
 
 
 def by_id(table, ids, cols="*"):
