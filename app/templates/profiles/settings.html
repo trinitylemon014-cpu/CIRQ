@@ -10,6 +10,10 @@
 <form class="card" method="post" style="margin-top:14px">{{ m.csrf() }}<input type="hidden" name="action" value="password"><h2>Change password</h2>
   {{ m.pw_field('current', 'Current password') }}{{ m.pw_field('new', 'New password', 'new-password') }}{{ m.pw_field('new2', 'Confirm new password', 'new-password') }}
   <button class="btn block" style="margin-top:14px">Update password</button></form>
+<form class="card" method="post" style="margin-top:14px">{{ m.csrf() }}<input type="hidden" name="action" value="recs"><h2>Suggestions</h2>
+  <p class="muted small">CIRQ learns from what you like, comment on and watch on CIRQ (never from anything outside the app) to suggest posts and reels you may enjoy. You can use "Not interested" on any post.</p>
+  <label class="check"><input type="checkbox" name="personalized_recs" {{ 'checked' if cur.personalized_recs is not false }}> Personalised suggestions</label>
+  <div class="row" style="margin-top:12px"><button class="btn sm grow">Save</button><button class="btn sm ghost" name="reset" value="1" formnovalidate onclick="return confirm('Reset your suggestions? CIRQ will forget what it learned about your interests.')">Reset my suggestions</button></div></form>
 <div class="card" style="margin-top:14px"><h2>Blocked accounts</h2>{% for b in blocked %}<div class="person">{{ m.avatar(b, 38) }}<div class="grow">@{{ b.username }}</div>
   <form method="post" action="{{ url_for('profiles.block', username=b.username) }}">{{ m.csrf() }}<button class="btn sm ghost">Unblock</button></form></div>{% else %}<p class="muted">You haven't blocked anyone.</p>{% endfor %}</div>
 <form class="card" method="post" style="margin-top:14px;border-color:rgba(255,93,108,.4)">{{ m.csrf() }}<input type="hidden" name="action" value="delete"><h2 style="color:var(--danger)">Delete account</h2>
