@@ -31,9 +31,9 @@ def index():
         # Boosted students are shown first and are labelled "Boosted"; everyone else is ordered by newest.
         rows.sort(key=lambda p: not is_boosted(p))
         people = rows[:30]
-        follows = set(social.following_ids(me["id"]))
+        follows, asked = set(social.following_ids(me["id"])), social.requested_ids(me["id"])
         for p in people:
-            p["_following"] = p["id"] in follows
+            p["_state"] = "following" if p["id"] in follows else ("requested" if p["id"] in asked else "none")
         sch = sb.by_id("schools", [p.get("school_id") for p in people])
         for p in people:
             p["_school"] = sch.get(p.get("school_id"))
