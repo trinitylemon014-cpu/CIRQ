@@ -27,6 +27,41 @@
   }
   setTimeout(() => $$(".flash").forEach((f) => f.remove()), 6000);
 
+  /* ---------- viewing signals: what a student dwells on / watches (powers "Suggested for you") ---------- */
+  const sig = { q: [], timer: null };
+  function flushSignals() {
+    clearTimeout(sig.timer); sig.timer = null;
+    if (!sig.q.length) return;
+    const events = sig.q.splice(0, 30);
+    fetch("/api/signals", { method: "POST", keepalive: true, credentials: "same-origin",
+      headers: { "Content-Type": "application/json", "X-CSRFToken": csrf(), "X-Requested-With": "fetch" }, body: JSON.stringify({ events }) }).catch(() => {});
+    if (sig.q.length) sig.timer = setTimeout(flushSignals, 1000);
+  }
+  function pushSignal(post_id, event, value) {
+    if (!post_id) return;
+    sig.q.push({ post_id, event, value });
+    if (sig.q.length >= 20) flushSignals(); else if (!sig.timer) sig.timer = setTimeout(flushSignals, 6000);
+  }
+  window.addEventListener("pagehide", () => { dwellFlush(); flushSignals(); });
+
+  // posts in the feed: count a "view" when a post stays mostly on screen for a moment
+  const dwell = new Map();
+  const dwellIO = "IntersectionObserver" in window ? new IntersectionObserver((entries) => {
+    entries.forEach((en) => {
+      const el = en.target;
+      if (en.isIntersecting && en.intersectionRatio >= 0.6) { if (!dwell.has(el)) dwell.set(el, performance.now()); }
+      else if (dwell.has(el)) { const ms = performance.now() - dwell.get(el); dwell.delete(el); if (ms >= 1500) pushSignal(el.dataset.postId, "view", Math.round(ms)); }
+    });
+  }, { threshold: [0, 0.6] }) : null;
+  function dwellFlush() { dwell.forEach((t0, el) => { const ms = performance.now() - t0; if (ms >= 1500) pushSignal(el.dataset.postId, "view", Math.round(ms)); dwell.set(el, performance.now()); }); }
+  document.addEventListener("visibilitychange", () => { if (document.hidden) { dwellFlush(); flushSignals(); } });
+  function observePosts(root) { if (dwellIO) $$("article.post[data-post-id]", root || document).forEach((a) => { if (!a._d) { a._d = 1; dwellIO.observe(a); } }); }
+  observePosts();
+  const feedBox = $("#feed"); if (feedBox) new MutationObserver(() => observePosts(feedBox)).observe(feedBox, { childList: true });
+  document.addEventListener("ended", (e) => {      // a post video watched to the end is a strong signal
+    const v = e.target, card = v.closest && v.closest("article.post[data-post-id]"); if (card && v.tagName === "VIDEO") pushSignal(card.dataset.postId, "watch", 1);
+  }, true);
+
   /* ---------- generic click handlers (event delegation) ---------- */
   document.addEventListener("click", async (e) => {
     const t = e.target;
@@ -57,6 +92,17 @@
       const [type, id] = rep.dataset.report.split(":");
       const d = $("#report-dialog"); const f = $("[data-report-form]", d);
       f.target_type.value = type; f.target_id.value = id; d.showModal(); return;
+    }
+
+    const ni = c("[data-not-interested]");
+    if (ni) {
+      const id = ni.dataset.notInterested, card = c("[data-reel]") || c("article.post");
+      try {
+        const r = await api(`/posts/${id}/not-interested`);
+        toast(r.message || "We'll show fewer posts like this.", "success");
+        if (card) { card.classList.add("gone"); setTimeout(() => { if (card.matches("[data-reel]")) { const nx = card.nextElementSibling; nx && nx.scrollIntoView({ behavior: "smooth" }); setTimeout(() => card.remove(), 400); } else card.remove(); }, 300); }
+      } catch (err) { toast(err.message, "error"); }
+      return;
     }
 
     const like = c("[data-like]");
@@ -217,12 +263,18 @@
       v.muted = muted; v.classList.remove("failed"); $(".reel-retry", r).hidden = true;
       const pr = v.play(); if (pr && pr.catch) pr.catch(() => { /* autoplay blocked until a tap */ });
     }
+    // how much of a reel was actually watched (1 = whole reel, >1 = replayed); fast swipe-aways count as "not for me"
+    function reportWatch(r) {
+      const v = vid(r); const ms = (r._ms || 0) + (r._t0 ? performance.now() - r._t0 : 0); r._ms = 0; r._t0 = 0; r._active = false;
+      if (!v || !v.duration || !isFinite(v.duration) || ms < 400) return;
+      pushSignal(r.dataset.id, "watch", +(ms / (v.duration * 1000)).toFixed(2));
+    }
     const io = new IntersectionObserver((entries) => {
       entries.forEach((en) => {
         const r = en.target, v = vid(r); if (!v) return;
         if (en.intersectionRatio > 0.1) arm(r);
-        if (en.isIntersecting && en.intersectionRatio > 0.65) { $$("video", reels).forEach((o) => { if (o !== v) o.pause(); }); playReel(r); }
-        else { v.pause(); if (en.intersectionRatio === 0) v.currentTime = 0; }
+        if (en.isIntersecting && en.intersectionRatio > 0.65) { $$("video", reels).forEach((o) => { if (o !== v) o.pause(); }); r._active = true; playReel(r); }
+        else { if (r._active) reportWatch(r); v.pause(); if (en.intersectionRatio === 0) v.currentTime = 0; }
       });
       const all = $$("[data-reel]", reels), last = all[all.length - 2] || all[all.length - 1];
       if (last && entries.some((en) => en.target === last && en.isIntersecting)) loadMoreReels();
@@ -231,6 +283,8 @@
     function wire(r) {                         // per-reel video events (progress, buffering, errors)
       const v = vid(r); if (!v || v._wired) return; v._wired = 1;
       const bar = $(".reel-progress i", r);
+      v.addEventListener("playing", () => { if (!r._t0) r._t0 = performance.now(); });
+      v.addEventListener("pause", () => { if (r._t0) { r._ms = (r._ms || 0) + performance.now() - r._t0; r._t0 = 0; } });
       v.addEventListener("timeupdate", () => { if (v.duration) bar.style.transform = `scaleX(${v.currentTime / v.duration})`; });
       ["waiting", "loadstart", "seeking"].forEach((ev) => v.addEventListener(ev, () => r.classList.add("buffering")));
       ["playing", "canplay", "loadeddata"].forEach((ev) => v.addEventListener(ev, () => r.classList.remove("buffering")));
@@ -269,7 +323,7 @@
       }, 260);
     });
 
-    document.addEventListener("visibilitychange", () => { if (document.hidden) $$("video", reels).forEach((v) => v.pause()); });
+    document.addEventListener("visibilitychange", () => { if (document.hidden) { $$("[data-reel]", reels).forEach((r) => { if (r._active) reportWatch(r); }); $$("video", reels).forEach((v) => v.pause()); } });
     document.addEventListener("keydown", (e) => {   // desktop: arrows move between reels, space pauses
       if (/INPUT|TEXTAREA|SELECT/.test((e.target.tagName || ""))) return;
       const rs = $$("[data-reel]", reels); const cur = rs.findIndex((r) => { const b = r.getBoundingClientRect(), c = reels.getBoundingClientRect(); return Math.abs(b.top - c.top) < c.height / 2; });
