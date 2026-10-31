@@ -24,5 +24,5 @@
 
 {% if suggestions %}<div class="section-title"><h2>From your school</h2></div>
 <div class="card">{% for s in suggestions %}<div class="person"><a href="{{ url_for('profiles.view', username=s.username) }}">{{ m.avatar(s, 44) }}</a><div class="grow"><b>{{ s.display_name }}</b>{{ m.verified(s) }}<br><small class="muted">@{{ s.username }}</small></div>
-  <button class="btn sm" data-follow="{{ s.username }}" type="button">Follow</button></div>{% endfor %}</div>{% endif %}
+  {{ m.follow_btn(s.username, 'none', private=s.is_private) }}</div>{% endfor %}</div>{% endif %}
 {% endblock %}
