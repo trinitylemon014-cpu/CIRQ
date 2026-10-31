@@ -1,6 +1,6 @@
 from flask import Blueprint, render_template, redirect, url_for, g, jsonify, abort
 from app.decorators import login_required
-from app.services import supabase_service as sb
+from app.services import supabase_service as sb, social
 from app.services.notification_service import unread_count, mark_all_read
 from app.utils import iso
 
@@ -9,7 +9,9 @@ bp = Blueprint("notifications", __name__)
 
 def target_url(n):
     k, ref = n["kind"], n.get("ref_id")
-    if k == "follow" and n.get("actor_id"):
+    if k == "follow_request":
+        return url_for("profiles.follow_requests")
+    if k in ("follow", "follow_accepted", "story_like") and n.get("actor_id"):
         a = sb.get("profiles", "username", id=n["actor_id"])
         return url_for("profiles.view", username=a["username"]) if a else url_for("notifications.index")
     if k in ("like", "comment") and ref:
@@ -28,7 +30,11 @@ def index():
     actors = sb.by_id("profiles", [r.get("actor_id") for r in rows])
     for r in rows:
         r["actor"] = actors.get(r.get("actor_id"))
-    return render_template("notifications/index.html", items=rows)
+    # Instagram-style "Follow requests" entry at the top of Activity (only people the viewer hasn't hidden)
+    hidden = social.blocked_between(g.user["id"])
+    pending = [r for r in sb.select("follow_requests", order="created_at", target_id=g.user["id"]) if r["requester_id"] not in hidden]
+    preview = list(sb.by_id("profiles", [r["requester_id"] for r in pending[:3]]).values())
+    return render_template("notifications/index.html", items=rows, req_count=len(pending), req_preview=preview)
 
 
 @bp.post("/notifications/read-all")
